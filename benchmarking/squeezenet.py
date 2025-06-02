@@ -1,40 +1,60 @@
+import time
 import torch
 import torchvision.models as models
-import time
-import psutil
+import torchvision.transforms as transforms
+from PIL import Image
 import os
+import psutil
+import numpy as np
 
-# Load pre-trained SqueezeNet model
+# Load pretrained SqueezeNet model
 model = models.squeezenet1_1(pretrained=True)
 model.eval()
 
-# Device setup
-device = torch.device("cpu")
-model.to(device)
+# Save model weights to measure size
+torch.save(model.state_dict(), "squeezenet1_1.pth")
+model_size_mb = os.path.getsize("squeezenet1_1.pth") / (1024 ** 2)
+print(f"Model Size (weights only): {model_size_mb:.2f} MB")
 
-# Dummy input tensor
-dummy_input = torch.randn(1, 3, 224, 224).to(device)
+# Load test image
+image_path = "test.jpg"
+image = Image.open(image_path).convert("RGB").resize((224, 224))
 
-# Benchmarking without warm-up
-runs = 100
+# Preprocessing
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225]),
+])
+input_tensor = transform(image).unsqueeze(0)
+
+# Measure inference time and CPU
 inference_times = []
+cpu_samples = []
+process = psutil.Process()
 
-print(f"Benchmarking SqueezeNet for {runs} runs (no warm-up)...\n")
-for i in range(runs):
-    start_time = time.time()
-    with torch.no_grad():
-        _ = model(dummy_input)
-    end_time = time.time()
-    inference_time = end_time - start_time
-    inference_times.append(inference_time)
-    print(f"Run {i+1:03}: {inference_time:.4f} seconds")
+start_mem = process.memory_info().rss / (1024 ** 2)  # in MB
 
-# Results
-avg_time = sum(inference_times) / runs
-std_dev = (sum([(x - avg_time) ** 2 for x in inference_times]) / runs) ** 0.5
-ram_usage = psutil.Process(os.getpid()).memory_info().rss / (1024 ** 2)
+with torch.no_grad():
+    for _ in range(100):
+        cpu_samples.append(process.cpu_percent(interval=None))
+        start = time.time()
+        _ = model(input_tensor)
+        end = time.time()
+        inference_times.append((end - start) * 1000)  # ms
+        cpu_samples[-1] = process.cpu_percent(interval=None)
 
-print("\n--- Final Benchmark Results ---")
-print(f"Average Inference Time: {avg_time:.4f} seconds")
-print(f"Standard Deviation: {std_dev:.4f} seconds")
-print(f"RAM Usage: {ram_usage:.2f} MB")
+end_mem = process.memory_info().rss / (1024 ** 2)
+ram_usage = end_mem - start_mem
+avg_cpu = np.mean(cpu_samples)
+
+# Stats
+times_np = np.array(inference_times)
+print(f"\nSqueezeNet Inference Benchmark (100 runs):")
+print(f"  Mean Inference Time:      {times_np.mean():.2f} ms")
+print(f"  Std Deviation:            {times_np.std():.2f} ms")
+print(f"  Min Time:                 {times_np.min():.2f} ms")
+print(f"  Max Time:                 {times_np.max():.2f} ms")
+print(f"  RAM Usage:                {ram_usage:.2f} MB")
+print(f"  CPU Utilization:          {avg_cpu:.2f} %")
+print(f"  Model Size (.pth):        {model_size_mb:.2f} MB")
